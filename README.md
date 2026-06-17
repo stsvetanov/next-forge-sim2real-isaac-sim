@@ -22,7 +22,7 @@ baked USD) is driven three ways:
 ## Requirements
 
 - **NVIDIA Isaac Sim 5.1** (standalone Python).
-- An NVIDIA RTX GPU (developed on an RTX 4090).
+- An NVIDIA RTX GPU.
 - The `Task_Board_physics.usd` asset from this repo.
 - Optional, for external topic inspection/control: **ROS 2 Jazzy** in a separate terminal.
 
@@ -31,7 +31,16 @@ bundled Python, not the system one:
 
 ```bash
 cd /path/to/isaac-sim        # the folder containing python.sh
-./python.sh /path/to/script.py
+/python.sh /path/to/script.py
+```
+
+To install Isaac Sim.
+Download Isaac Sim 5.1.0 for your platform to the Downloads folder and Unzip it. (/data/isaac-sim-5.1/ in this example)
+
+```bash
+cd /data/isaac-sim-5.1
+and run
+./post_install.sh
 ```
 
 ## Setup
@@ -43,7 +52,7 @@ Place the USD where the scripts expect it, or point them at it with an env var:
 #   /data/eurobin/Task_Board_physics.usd
 # or override:
 export TASKBOARD_USD=/path/to/Task_Board_physics.usd
-export TASKBOARD_LOG_DIR=/data/isaac-sim/logs   # where CSV logs are written
+export TASKBOARD_LOG_DIR=/path/to/logs   # where CSV logs are written
 ```
 
 `TASKBOARD_LOG_DIR` defaults to the current working directory.
@@ -51,7 +60,7 @@ export TASKBOARD_LOG_DIR=/data/isaac-sim/logs   # where CSV logs are written
 ## 1. Robot demo — `taskboard_franka_press_c3_fixed.py`
 
 ```bash
-./python.sh taskboard_franka_press_c3_fixed.py
+/data/isaac-sim-5.1/python.sh taskboard_franka_press.py
 ```
 
 A Franka with a closed gripper holding a red pin runs the sequence:
@@ -72,7 +81,7 @@ phase durations that set the timeline pacing.
 ## 2. Keyboard digital twin — `taskboard_twin_keyboard.py`
 
 ```bash
-./python.sh taskboard_twin_keyboard.py
+/data/isaac-sim-5.1/python.sh taskboard_twin_keyboard.py
 ```
 
 Loads the board **without a robot** and turns the red button, blue button,
