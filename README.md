@@ -57,7 +57,7 @@ export TASKBOARD_LOG_DIR=/path/to/logs   # where CSV logs are written
 
 `TASKBOARD_LOG_DIR` defaults to the current working directory.
 
-## 1. Robot demo — `taskboard_franka_press_c3_fixed.py`
+## 1. Robot demo — `taskboard_franka_press.py`
 
 ```bash
 /data/isaac-sim-5.1/python.sh taskboard_franka_press.py
