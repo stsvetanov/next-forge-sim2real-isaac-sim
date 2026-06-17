@@ -31,12 +31,40 @@ Env vars:
 """
 import csv
 import os
+import threading
 from datetime import datetime, timezone
 
 from isaacsim import SimulationApp
 
 CONFIG = {"headless": False}
 simulation_app = SimulationApp(CONFIG)
+
+# --------------------------------------------------------------------------- #
+# ROS 2 must use Isaac's INTERNAL Jazzy libraries (built for Python 3.11), not
+# a system /opt/ros/jazzy install (built for 3.12) -- a 3.12 rclpy C-extension
+# cannot load into Isaac's 3.11 interpreter. So:
+#   1) enable the ros2 bridge extension (it puts the internal libs on the path),
+#   2) import rclpy AFTER that.
+# Run this script in a terminal where system ROS is NOT sourced; run external
+# ROS nodes from a separate, ROS-sourced terminal (DDS bridges the two).
+# --------------------------------------------------------------------------- #
+os.environ.setdefault("ROS_DISTRO", "jazzy")
+os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
+
+_HAVE_ROS2 = False
+try:
+    from isaacsim.core.utils.extensions import enable_extension
+    enable_extension("isaacsim.ros2.bridge")
+    simulation_app.update()  # let the extension load its internal ROS 2 libs
+    import rclpy
+    from std_msgs.msg import Bool, Float32
+    _HAVE_ROS2 = True
+    print("[twin] ROS 2 enabled via Isaac internal libraries")
+except Exception as exc:
+    print(f"[twin] ROS 2 unavailable ({type(exc).__name__}: {exc}); "
+          f"keyboard -> emit() directly. "
+          f"If you expected ROS: launch in a terminal where /opt/ros is NOT "
+          f"sourced (check $ROS_DISTRO and that /opt/ros is off PYTHONPATH).")
 
 import numpy as np  # noqa: E402
 from pxr import Usd, UsdGeom, UsdLux, Gf  # noqa: E402
@@ -227,6 +255,55 @@ def main():
     def print_help():
         print(__doc__[__doc__.index("KEYS"):__doc__.index("Run from")])
 
+    # ---- ROS 2 integration ----------------------------------------------- #
+    # Key presses publish to /task_board/<sensor>; the subscriber callbacks
+    # call emit() so the model update flows through a single path regardless
+    # of whether the source is the keyboard or real hardware.
+    _ros_node = _ros_thread = None
+    _pub_red = _pub_blue = _pub_slider = _pub_door = None
+
+    if _HAVE_ROS2:
+        if not rclpy.ok():
+            rclpy.init()
+        _ros_node = rclpy.create_node("taskboard_twin")
+
+        _pub_red    = _ros_node.create_publisher(Bool,    "/task_board/red_button",  10)
+        _pub_blue   = _ros_node.create_publisher(Bool,    "/task_board/blue_button", 10)
+        _pub_slider = _ros_node.create_publisher(Float32, "/task_board/slider",      10)
+        _pub_door   = _ros_node.create_publisher(Float32, "/task_board/door",        10)
+
+        _ros_node.create_subscription(
+            Bool,    "/task_board/red_button",  lambda m: emit("red_button",  int(m.data)), 10)
+        _ros_node.create_subscription(
+            Bool,    "/task_board/blue_button", lambda m: emit("blue_button", int(m.data)), 10)
+        _ros_node.create_subscription(
+            Float32, "/task_board/slider",      lambda m: emit("slider",      m.data),      10)
+        _ros_node.create_subscription(
+            Float32, "/task_board/door",        lambda m: emit("door",        m.data),      10)
+
+        _ros_thread = threading.Thread(target=rclpy.spin, args=(_ros_node,), daemon=True)
+        _ros_thread.start()
+        print("[twin] ROS 2 node 'taskboard_twin' active on /task_board/{red_button,blue_button,slider,door}")
+    else:
+        print("[twin] running without ROS 2.")
+
+    def publish_sensor(sensor, value):
+        """Publish a board-sensor event to ROS 2; subscriber calls emit() to update model.
+
+        Falls back to calling emit() directly when rclpy is unavailable.
+        """
+        if _ros_node is None:
+            emit(sensor, value)
+            return
+        if sensor == "red_button":
+            m = Bool(); m.data = bool(value); _pub_red.publish(m)
+        elif sensor == "blue_button":
+            m = Bool(); m.data = bool(value); _pub_blue.publish(m)
+        elif sensor == "slider":
+            m = Float32(); m.data = float(value); _pub_slider.publish(m)
+        elif sensor == "door":
+            m = Float32(); m.data = float(value); _pub_door.publish(m)
+
     # ---- keyboard -------------------------------------------------------- #
     kb_sub = keyboard = input_iface = None
     if _HAVE_INPUT:
@@ -240,17 +317,17 @@ def main():
             et, k = event.type, event.input
             if et == ET.KEY_PRESS:
                 if k == K.KEY_1:
-                    emit("red_button", 1)
+                    publish_sensor("red_button", 1)
                 elif k == K.KEY_2:
-                    emit("blue_button", 1)
+                    publish_sensor("blue_button", 1)
                 elif k == K.LEFT:
-                    emit("slider", state["slider_target"] - SLIDER_STEP)
+                    publish_sensor("slider", state["slider_target"] - SLIDER_STEP)
                 elif k == K.RIGHT:
-                    emit("slider", state["slider_target"] + SLIDER_STEP)
+                    publish_sensor("slider", state["slider_target"] + SLIDER_STEP)
                 elif k == K.UP:
-                    emit("door", 1.0)
+                    publish_sensor("door", 1.0)
                 elif k == K.DOWN:
-                    emit("door", 0.0)
+                    publish_sensor("door", 0.0)
                 elif k == K.R:
                     reset_all()
                 elif k == K.H:
@@ -259,14 +336,14 @@ def main():
                     state["running"] = False
             elif et == ET.KEY_REPEAT:
                 if k == K.LEFT:
-                    emit("slider", state["slider_target"] - SLIDER_STEP)
+                    publish_sensor("slider", state["slider_target"] - SLIDER_STEP)
                 elif k == K.RIGHT:
-                    emit("slider", state["slider_target"] + SLIDER_STEP)
+                    publish_sensor("slider", state["slider_target"] + SLIDER_STEP)
             elif et == ET.KEY_RELEASE:
                 if k == K.KEY_1:
-                    emit("red_button", 0)
+                    publish_sensor("red_button", 0)
                 elif k == K.KEY_2:
-                    emit("blue_button", 0)
+                    publish_sensor("blue_button", 0)
             return True
 
         kb_sub = input_iface.subscribe_to_keyboard_events(keyboard, on_kb)
@@ -300,6 +377,12 @@ def main():
                 input_iface.unsubscribe_to_keyboard_events(keyboard, kb_sub)
             except Exception:
                 pass
+        if _ros_node is not None:
+            _ros_node.destroy_node()
+        if _HAVE_ROS2 and rclpy.ok():
+            rclpy.shutdown()
+        if _ros_thread is not None:
+            _ros_thread.join(timeout=2.0)
         if csv_file is not None:
             csv_file.flush()
             csv_file.close()
