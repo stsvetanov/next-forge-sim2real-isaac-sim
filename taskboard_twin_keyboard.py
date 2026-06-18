@@ -10,8 +10,10 @@ press on the physical port shows up as a press in Isaac Sim. No robot is loaded;
 the board is the mirror, not the manipulator.
 
 Every event is logged as  timestamp -> event  (console + CSV), exactly the shape
-a recorder needs. When the real integration lands, only `emit()` changes: a
-micro-ROS subscription calls emit(sensor, value) instead of the keyboard.
+a recorder needs. Keyboard input publishes ROS 2 messages; the ROS subscriber
+feeds those messages back into the Isaac update loop, so the rendered model is
+changed by the received board message. If ROS 2 is unavailable, keyboard input
+falls back to the same local event path for offline use.
 
 KEYS
     1            red button   (hold = pressed, release = up)
@@ -31,6 +33,7 @@ Env vars:
 """
 import csv
 import os
+import queue
 import threading
 from datetime import datetime, timezone
 
@@ -232,35 +235,36 @@ def main():
     def emit(sensor, value, note=""):
         """Single ingestion point for board events.
 
-        Keyboard calls this now; a micro-ROS subscription calls the very same
-        function later (e.g. on /task_board/red_button -> emit('red_button', msg.data)).
+        ROS subscriber callbacks enqueue messages that are drained into this
+        function on the Isaac simulation thread. Offline keyboard fallback uses
+        it directly when ROS 2 is not available.
         """
         if sensor in ("red_button", "blue_button"):
             if state[sensor] == value:
                 return
             state[sensor] = value
-            log_event(sensor, "PRESSED" if value else "RELEASED")
+            log_event(sensor, "PRESSED" if value else "RELEASED", note)
         elif sensor == "slider":
             state["slider_target"] = float(np.clip(value, 0.0, 1.0))
-            log_event("slider", round(state["slider_target"], 3))
+            log_event("slider", round(state["slider_target"], 3), note)
         elif sensor == "door":
             state["door_target"] = float(np.clip(value, 0.0, 1.0))
-            log_event("door", "OPEN" if value >= 0.5 else "CLOSED")
-
-    def reset_all():
-        state.update(red_button=0, blue_button=0,
-                     slider_target=0.5, door_target=0.0)
-        log_event("system", "RESET")
+            log_event("door", "OPEN" if value >= 0.5 else "CLOSED", note)
 
     def print_help():
         print(__doc__[__doc__.index("KEYS"):__doc__.index("Run from")])
 
     # ---- ROS 2 integration ----------------------------------------------- #
-    # Key presses publish to /task_board/<sensor>; the subscriber callbacks
-    # call emit() so the model update flows through a single path regardless
-    # of whether the source is the keyboard or real hardware.
+    # Key presses publish to /task_board/<sensor>; subscriber callbacks enqueue
+    # the received ROS messages, then the simulation loop applies them. This
+    # keeps keyboard, ROS test messages, and later micro-ROS board messages on
+    # the same model-update path.
     _ros_node = _ros_thread = None
     _pub_red = _pub_blue = _pub_slider = _pub_door = None
+    ros_events = queue.Queue()
+
+    def enqueue_ros_event(sensor, value):
+        ros_events.put((sensor, value, "ros"))
 
     if _HAVE_ROS2:
         if not rclpy.ok():
@@ -273,13 +277,13 @@ def main():
         _pub_door   = _ros_node.create_publisher(Float32, "/task_board/door",        10)
 
         _ros_node.create_subscription(
-            Bool,    "/task_board/red_button",  lambda m: emit("red_button",  int(m.data)), 10)
+            Bool,    "/task_board/red_button",  lambda m: enqueue_ros_event("red_button",  int(m.data)), 10)
         _ros_node.create_subscription(
-            Bool,    "/task_board/blue_button", lambda m: emit("blue_button", int(m.data)), 10)
+            Bool,    "/task_board/blue_button", lambda m: enqueue_ros_event("blue_button", int(m.data)), 10)
         _ros_node.create_subscription(
-            Float32, "/task_board/slider",      lambda m: emit("slider",      m.data),      10)
+            Float32, "/task_board/slider",      lambda m: enqueue_ros_event("slider",      m.data),      10)
         _ros_node.create_subscription(
-            Float32, "/task_board/door",        lambda m: emit("door",        m.data),      10)
+            Float32, "/task_board/door",        lambda m: enqueue_ros_event("door",        m.data),      10)
 
         _ros_thread = threading.Thread(target=rclpy.spin, args=(_ros_node,), daemon=True)
         _ros_thread.start()
@@ -288,7 +292,7 @@ def main():
         print("[twin] running without ROS 2.")
 
     def publish_sensor(sensor, value):
-        """Publish a board-sensor event to ROS 2; subscriber calls emit() to update model.
+        """Publish a board-sensor event to ROS 2; subscriber updates the model.
 
         Falls back to calling emit() directly when rclpy is unavailable.
         """
@@ -303,6 +307,14 @@ def main():
             m = Float32(); m.data = float(value); _pub_slider.publish(m)
         elif sensor == "door":
             m = Float32(); m.data = float(value); _pub_door.publish(m)
+
+    def publish_reset():
+        publish_sensor("red_button", 0)
+        publish_sensor("blue_button", 0)
+        publish_sensor("slider", 0.5)
+        publish_sensor("door", 0.0)
+        if _ros_node is None:
+            log_event("system", "RESET")
 
     # ---- keyboard -------------------------------------------------------- #
     kb_sub = keyboard = input_iface = None
@@ -329,7 +341,7 @@ def main():
                 elif k == K.DOWN:
                     publish_sensor("door", 0.0)
                 elif k == K.R:
-                    reset_all()
+                    publish_reset()
                 elif k == K.H:
                     print_help()
                 elif k == K.ESCAPE:
@@ -357,6 +369,14 @@ def main():
     # ---- main loop: ingest -> mirror ------------------------------------ #
     try:
         while simulation_app.is_running() and state["running"]:
+            # Apply all received ROS messages on the Isaac simulation thread.
+            while True:
+                try:
+                    sensor, value, note = ros_events.get_nowait()
+                except queue.Empty:
+                    break
+                emit(sensor, value, note)
+
             # Smooth the slowly-moving sensors toward their reported value.
             for key in ("slider", "door"):
                 a, t = state[f"{key}_actual"], state[f"{key}_target"]

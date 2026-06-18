@@ -190,6 +190,23 @@ ros2 topic pub --once /task_board/slider std_msgs/msg/Float32 "{data: 0.9}"
 ros2 topic pub --once /task_board/door std_msgs/msg/Float32 "{data: 1.0}"
 ```
 
+Or use the helper publisher script for repeated manual testing:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+python3 taskboard_ros_publisher.py --interactive
+```
+
+Useful one-shot examples:
+
+```bash
+python3 taskboard_ros_publisher.py --pulse-red
+python3 taskboard_ros_publisher.py --blue 1
+python3 taskboard_ros_publisher.py --blue 0
+python3 taskboard_ros_publisher.py --slider 0.9
+python3 taskboard_ros_publisher.py --door 1.0
+```
+
 ## Notes
 
 - The USD is already scaled to meters with `metersPerUnit = 1.0`; don't re-scale it.
